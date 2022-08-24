@@ -1,0 +1,196 @@
+"""
+Seasonal decompose
+Test if season decompose can separate short episodes from general trends, and if either are useful in predicting complications.
+"""
+
+#x = np.linspace(0,1440,1440)
+#y = (np.sin((x-400)/230)*10+70)+np.random.randn(1440)
+y = vascdf[vascdf['id']==54].hr
+x = y.index
+
+plt.scatter(x,y,alpha=.2)
+
+
+y_60 = vascdf[vascdf['id']==54].hr.rolling(60).mean().interpolate(limit_direction='both')
+plt.scatter(y_60.index,y_60,alpha=.2)
+y_10 = vascdf[vascdf['id']==54].hr.rolling(10).mean().interpolate(limit_direction='both')
+plt.scatter(x,y_10,alpha=.01)
+
+model = seasonal_decompose(np.concatenate((y_60,y_60,y_60,y_60,y_10)),freq=1440,two_sided=False)
+"""
+decompose, but to help out we add a couple of slices of the 60_minute averaged dataframe first.
+Finally we throw in the 10 minute averaged. Thus we get truer residuals.
+"""
+
+model.plot()
+plt.show()
+plt.plot(model.resid[-len(y_10):])
+plt.show()
+
+#%%
+"""
+Obstructive sleep apnea
+Sleep apnea has increased morbidity and mortality. Our SpO2 and activity sensor might help to find patients with OSA
+"""
+
+night_values = vascdf[vascdf['id']==54].between_time('23:00', '7:00')
+normox = night_values[night_values['sat']>90]
+hypox =  night_values[night_values['sat']<=90]
+fig,axs = plt.subplots(3,1,figsize=(20,10))
+axs[0].scatter(night_values.index,night_values['hr'],marker='+')
+axs[1].scatter(normox.index,normox['sat'],marker='+')
+axs[1].scatter(hypox.index,hypox['sat'],c='r',marker='+')
+axs[2].scatter(normox.index,normox['state'],marker='+')
+axs[2].scatter(hypox.index,hypox['state'],c='r',marker='+')
+
+#%%
+"""
+Pulse-Respiratory Quotient:
+https://www.frontiersin.org/articles/10.3389/fphys.2019.00371/full
+"""
+
+vascdf['prq'] = vascdf.hr / vascdf.rr
+fig,axs = plt.subplots(figsize=(25,10))
+plt.scatter(vascdf[vascdf['id']==81].index,vascdf[vascdf['id']==81].prq,alpha=.4)
+#difference between sick / healthy?
+
+#%%
+"""
+Cosinor fitting
+
+Enhancing cosinor analysis of circadian phase markers using the gamma distribution Margaret M.Doyle
+AND
+https://iopscience-iop-org.ep.fjernadgang.kb.dk/article/10.1088/1361-6579/ab3dea
+"""
+from scipy.fft import dct, idct,fftimport numpy as np
+
+### Below is for simulated data
+N = 50
+t = np.linspace(0,20,N, endpoint=False)
+y = np.exp(-t/3)*np.cos(2*t)
+y = np.random.randint(0,100,N)
+###
+
+
+### Below is for actual data ###
+#y_hr_unfiltered = data[data.iloc[:,1].between(0,900)].iloc[:,1]
+#y_hr = y_hr_unfiltered.rolling(5).mean().dropna()
+
+#y = y_hr.values
+#t = range(len(y))
+
+funct = dct(y, norm='ortho')
+#N = len(funct)
+###
+
+plt.figure(figsize=(20,15))
+plt.plot(t, y, '-bx')
+
+window = np.zeros(N)
+window[:3] = 1
+yr = idct(funct*window, norm='ortho',n=len(y))
+plt.plot(t, yr, 'rd',alpha=.2)
+print (sum(abs(y-yr)**2) / sum(abs(y)**2)) # error of function
+
+window = np.zeros(N)
+window[:15] = 1
+yr = idct(funct*window, norm='ortho',n=len(y))
+plt.plot(t, yr, 'p',alpha=.2)
+
+print (sum(abs(y-yr)**2) / sum(abs(y)**2))# error of function
+
+window = np.zeros(N)
+window[:20] = 1
+yall = idct(funct*window, norm='ortho',n=len(y))
+plt.plot(t, yall, 'go',alpha=.3)
+
+print (sum(abs(y-yall)**2) / sum(abs(y)**2))# error of function
+
+
+plt.legend(['x', '$x_{3}$', '$x_{15}$','$x_{1000}$'])
+plt.grid()
+
+plt.show()
+
+select_df = vascdf.loc[(vascdf.index < pd.Timestamp(year=2020,month=9,day=10)) & (vascdf.id==54)]
+
+def resampler_for_cos_fit(in_df, var):
+  first_id_with_values = in_df[var].first_valid_index()
+
+  if in_df.index.max() < in_df.index.min()+ pd.Timedelta('24 hours'):
+    in_df.loc[in_df.index.min()+ pd.Timedelta('24 hours')] = in_df.loc[first_id_with_values]
+  resampled_for_circ_fitting = in_df.resample('10t').mean()
+  return (resampled_for_circ_fitting)
+
+df_for_fit = resampler_for_cos_fit(select_df,'hr')
+
+def fft_windows(data_in,var):
+  vals_days_table = [['id','day','time_to_event','max_coef','var_0','var_1','var_2','var_3','var_4','var_5','var_6','var_7','var_8','var_9']]
+  for id in data_in['id'].unique():
+    sae_date = series_PatientsFirstSAE.loc[id]
+    data_id = data[data.id == id]
+#    fig,ax = plt.subplots(1,len(data_id.index.strftime('%d').unique()),figsize=(20,7),sharey='row')
+#    fig.suptitle(str(id))
+    for no,day in enumerate((data_id.index.strftime('%d')).unique()):
+      data_day_window = data_id[data_id.index.strftime('%d') == day]
+
+      #To help interpret when events occur:
+      time_to_event_at_midnight = data_day_window.index.max()-sae_date
+
+      #Cleanup and filtering on the fly:
+      data_day_window = data_day_window.resample('1T').mean()
+      data_day_window = data_day_window.rolling('5T').mean().sort_index()
+      data_day_window = data_day_window.interpolate(method='linear',limit_area='inside',limit=30)
+      data_day_window['time_of_day'] = data_day_window.index.to_series().dt.time
+
+      data_day_window = data_day_window.reset_index().set_index('time_of_day')
+      data_day_window[var] = data_day_window[var].sub(median_circ_vals[var])
+      data_day_window = data_day_window.reset_index().set_index('timestamp')
+
+      #End Cleanup - plot result
+#      ax[no].plot(data_day_window.index,data_day_window[var].values,marker='+',ls='')
+#      try: ax[no].vlines(sae_date,0,100,colors='r',ls='-.')
+#      except: None
+      
+      #Create Discrete Cosine function:
+      dct_funct = dct(data_day_window[var].values, norm='ortho')
+
+      #Limit the number of evaluators that we want, 5?
+      N = len(dct_funct)
+      window = np.zeros(N)
+      window[:5] = 1
+      
+      #Create and plot the Inverse Discrete Cosine Transform using the selected evaluators.
+      yr = idct(dct_funct*window, norm='ortho')
+      max_coef = max(moving_average(np.diff(yr)))
+#      ax[no].plot(data_day_window.index,yr,'rd',alpha=.2)
+#      ax[no].title.set_text(str(day)+', ' +str(time_to_event_at_midnight))
+ 
+      #Outputs of function:
+      vals_days_table.append([id,day,time_to_event_at_midnight.days,max_coef,*dct_funct[:10]])
+#      ax[no].tick_params(which='major', labelrotation=90)
+#    plt.show()
+  return vals_days_table
+
+return_table = fft_windows(data,'hr')
+return_df = pd.DataFrame(return_table[1:],columns=return_table[0])
+
+return_df
+
+return_df['time_to_event'] = return_df['time_to_event'].replace(np.nan,'none')
+
+sns.scatterplot('max_coef','var_6',data=return_df,hue='sae')
+
+return_df['sae'] = return_df.time_to_event.between(-4,0)
+tree_df = return_df.dropna(thresh=5)
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn import tree
+
+clf = DecisionTreeClassifier(criterion='entropy',max_depth=4)
+
+clf.fit((tree_df.iloc[:,3:-1]),tree_df.sae)
+
+fig = plt.subplots(figsize=(20,10))
+fig = tree.plot_tree(clf)
+plt.show()
